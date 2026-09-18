@@ -1,0 +1,9 @@
+version: '3.8'
+
+services:
+  minion-app:
+    build: .
+    container_name: minion_app
+    ports:
+      - "80:80"
+    restart: always

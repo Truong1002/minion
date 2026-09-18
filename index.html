@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lời Mời Kết Bạn - Tranh Minion 2D Vẽ Tay Toàn Màn Hình</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+
+    <!-- Canvas hạt lung linh nền -->
+    <canvas id="particle-canvas"></canvas>
+
+    <!-- Canvas pháo hoa ăn mừng -->
+    <canvas id="confetti-canvas"></canvas>
+
+    <!-- Canvas vẽ Minion 2D Toàn Màn Hình -->
+    <canvas id="mainArtCanvas"></canvas>
+
+    <!-- 1. Card Lời Mời Kết Bạn ban đầu -->
+    <div class="main-wrapper" id="mainWrapper">
+        <div class="card" id="requestCard">
+            <div class="card-badge">
+            </div>
+            <div class="preview-avatar">
+                <div class="dot-icon">✏️</div>
+            </div>
+
+            <h1 class="card-title">Kết bạn facbook nhé?</h1>
+
+            <div class="btn-group">
+                <button class="btn btn-yes" id="btnYes">
+                    <span class="btn-icon">✨</span> Đồng ý (Có)
+                </button>
+                <button class="btn btn-no" id="btnNo">
+                    Không nha 😜
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Badge Tiến Trình Vẽ Bút Chì Trên Cùng -->
+    <div class="draw-status-badge hidden" id="drawStatusBadge">
+        <div class="badge-content">
+            <span class="pencil-indicator">✏️</span>
+            <span class="status-title" id="statusTitle">Đang vẽ Minion 2D...</span>
+            <span class="status-percent" id="statusPercent">0%</span>
+        </div>
+        <div class="progress-bar-mini">
+            <div class="progress-fill-mini" id="progressFillMini"></div>
+        </div>
+    </div>
+
+    <!-- Bút chì di chuyển phác họa trên màn hình -->
+    <div class="pencil-tool hidden" id="pencilTool">
+        <span class="pencil-icon">✏️</span>
+        <span class="pencil-lead-glow"></span>
+    </div>
+
+    <!-- Nút Reset góc trên bên phải -->
+    <button class="floating-reset-btn hidden" id="btnFloatingReset">
+        🔄 Thử lại
+    </button>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
