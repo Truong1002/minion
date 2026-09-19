@@ -1,9 +1,7 @@
-version: '3.8'
-
 services:
   minion-app:
     build: .
     container_name: minion_app
     ports:
-      - "80:80"
+      - "127.0.0.1:8091:80"   # nginx cua host se proxy vao cong nay
     restart: always
