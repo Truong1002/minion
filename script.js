@@ -314,8 +314,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Tính khung tờ giấy vừa với màn hình, giữ đúng tỉ lệ ảnh gốc
     function computeSketchBox() {
         const ratio = (photo.naturalHeight || 1) / (photo.naturalWidth || 1);
-        const maxW = Math.min(width - 56, 640);
-        const maxH = Math.min(height - 120, 640);
+        const narrow = width < 600;
+        // Dien thoai: le hep hon de tranh to hon, nhung chua cho badge tren + nut Thu Lai duoi
+        const maxW = Math.min(width - (narrow ? 32 : 56), 640);
+        const maxH = Math.min(height - (narrow ? 168 : 120), 640);
         let w = Math.max(180, maxW);
         let h = w * ratio;
         if (h > maxH) { h = Math.max(180, maxH); w = h / ratio; }
@@ -515,8 +517,13 @@ document.addEventListener('DOMContentLoaded', () => {
     function scheduleSketchRebuild() {
         if (rebuildTimer) clearTimeout(rebuildTimer);
         rebuildTimer = setTimeout(() => {
-            sketchReady = false;
-            buildSketchLayers();
+            const box = computeSketchBox();
+            if (sketchReady && sketchBox && box.w === sketchBox.w && box.h === sketchBox.h) {
+                sketchBox = box;            // chi doi vi tri, khoi dung lai lop muc
+            } else {
+                sketchReady = false;
+                buildSketchLayers();
+            }
             if (!isDrawing && sketchShown) renderPencilSketch(1);
         }, 200);
     }

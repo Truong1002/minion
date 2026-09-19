@@ -133,6 +133,15 @@
   .plaque dd{margin:0; font-size:13.5px; color:rgba(242,236,222,.88); font-variant-numeric:tabular-nums;}
   .hint{margin:18px 0 0; font-size:12.5px; line-height:1.6; color:rgba(242,236,222,.42);}
   @media (prefers-reduced-motion: reduce){.pencil{display:none}}
+  @media (max-width:430px){
+    .stage{padding-inline:16px; padding-block:28px 40px;}
+    .sheet{padding:12px 12px 11px;}
+    .signature{flex-direction:column; align-items:flex-start; gap:4px;}
+    .tray{padding:16px;}
+    .controls{gap:14px;}
+    .plaque{gap:16px 20px;}
+    .plaque dl{flex:1 1 calc(50% - 10px);}
+  }
 </style>
 
 <div class="stage">
