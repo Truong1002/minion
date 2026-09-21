@@ -26,7 +26,8 @@ Bức tranh trong app **không phải hình vẽ vector** mà được dựng th
 4. Chỉnh điểm trắng + gamma cho giấy trắng bong, nét đậm
 5. Dò biên **Sobel** để ăn thêm đường viền chì
 6. Phủ nét gạch chéo ở vùng tối, rồi trải vân giấy tự sinh
-7. Hiện dần trong 10 giây theo từng nét chì chéo, có đầu bút chì chạy theo
+7. Hiện dần trong ~7,5 giây theo từng nét chì chéo, có đầu bút chì chạy theo
+8. Tô màu trong ~5,5 giây: ảnh gốc được tô dần lên giấy theo từng dải sáp zíc-zắc (chồng kiểu multiply để giữ vân giấy), nét chì vẫn nằm trên cùng
 
 | File | Vai trò |
 | --- | --- |

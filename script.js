@@ -5,10 +5,10 @@
 document.addEventListener('DOMContentLoaded', () => {
     // DOM Elements
     const mainWrapper = document.getElementById('mainWrapper');
-    const btnYes = document.getElementById('btnYes');
-    const btnNo = document.getElementById('btnNo');
+    const btnStart = document.getElementById('btnStart');
     const btnFloatingReset = document.getElementById('btnFloatingReset');
     const pencilTool = document.getElementById('pencilTool');
+    const pencilIcon = pencilTool.querySelector('.pencil-icon');
     const drawStatusBadge = document.getElementById('drawStatusBadge');
     const statusTitle = document.getElementById('statusTitle');
     const statusPercent = document.getElementById('statusPercent');
@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let isDrawing = false;
     let drawAnimFrame = null;
-    const DRAW_DURATION = 10000; // 10 seconds
+    const DRAW_DURATION = 13000; // phác chì ~7,5 giây rồi tô màu ~5,5 giây
 
     // Resize Handler
     window.addEventListener('resize', () => {
@@ -218,11 +218,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const SKETCH = { blur: 8, dark: 0.63, edge: 0.54, hatch: 0.40 };
     const STROKE_COUNT = 74;
+    const SKETCH_SPLIT = 0.58;   // phần đầu của tiến trình dành cho phác chì, phần sau để tô màu
+    const COLOR_BANDS = 22;      // số dải sáp màu tô từ trên xuống
 
     let sketchInk = null;     // lớp "mực chì" (canvas)
     let sketchPaper = null;   // lớp giấy vẽ
     let sketchBox = null;     // vị trí tờ giấy trên màn hình {x, y, w, h}
     let maskCv = null, tmpCv = null;
+    let colorCv = null, colorMaskCv = null, colorTmpCv = null;   // lớp màu + mặt nạ tô dần
     let sketchReady = false;
     let sketchShown = false;   // tranh đã được vẽ ra màn hình hay chưa
     let sketchTainted = false;
@@ -436,6 +439,15 @@ document.addEventListener('DOMContentLoaded', () => {
         sketchPaper = buildPaperLayer(width, height);
         maskCv = mkCanvas(W, H);
         tmpCv = mkCanvas(W, H);
+
+        // 8. lớp màu: ảnh gốc đúng khung hình vẽ, sẽ được "tô" dần lên giấy sau khi phác chì
+        colorCv = mkCanvas(W, H);
+        const cg = colorCv.getContext('2d');
+        cg.imageSmoothingQuality = 'high';
+        cg.drawImage(photo, 0, 0, W, H);
+        colorMaskCv = mkCanvas(W, H);
+        colorTmpCv = mkCanvas(W, H);
+
         sketchReady = true;
         return true;
     }
@@ -449,65 +461,138 @@ document.addEventListener('DOMContentLoaded', () => {
         return { x1: p, y1: -20, x2: p + slant, y2: H + 20, w: span * 1.7 };
     }
 
+    // Dải sáp màu thứ i: đường zíc-zắc ngang, chiều đi đổi luân phiên như tay người tô
+    function colorBandPath(i, W, H) {
+        const bandH = H / COLOR_BANDS;
+        const y0 = (i + 0.5) * bandH;
+        const steps = Math.max(6, Math.round(W / 34));
+        const pts = [];
+        for (let k = 0; k <= steps; k++) {
+            pts.push({
+                x: -20 + (k / steps) * (W + 40),
+                y: y0 + (k % 2 ? 1 : -1) * bandH * 0.45
+            });
+        }
+        if (i % 2) pts.reverse();
+        return { pts, w: bandH * 2.1 };
+    }
+
+    // Vẽ một phần (frac) của đường, trả về điểm đầu bút đang đứng
+    function drawPartialPath(ctx, band, frac) {
+        const pts = band.pts, segs = pts.length - 1;
+        const pos = frac * segs, full = Math.floor(pos), f = pos - full;
+        ctx.lineWidth = band.w;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let k = 1; k <= full; k++) ctx.lineTo(pts[k].x, pts[k].y);
+        let end = pts[Math.min(full, segs)];
+        if (full < segs) {
+            const a = pts[full], c = pts[full + 1];
+            end = { x: a.x + (c.x - a.x) * f, y: a.y + (c.y - a.y) * f };
+            ctx.lineTo(end.x, end.y);
+        }
+        ctx.stroke();
+        return end;
+    }
+
+    // Chép lớp nguồn qua mặt nạ vào canvas tạm
+    function maskInto(tmp, src, mask) {
+        const tg = tmp.getContext('2d');
+        tg.globalCompositeOperation = 'source-over';
+        tg.clearRect(0, 0, tmp.width, tmp.height);
+        tg.drawImage(src, 0, 0);
+        tg.globalCompositeOperation = 'destination-in';
+        tg.drawImage(mask, 0, 0);
+        tg.globalCompositeOperation = 'source-over';
+        return tmp;
+    }
+
+    let currentTool = 'pencil';
+
     function renderPencilSketch(progress) {
         artCtx.clearRect(0, 0, width, height);
 
         if (!sketchReady) {
             if (sketchTainted) {
-                // Dự phòng: không đọc được pixel thì vẫn cho xem ảnh trắng đen
+                // Dự phòng: không đọc được pixel thì vẫn cho xem ảnh gốc
                 const b = computeSketchBox();
-                artCtx.save();
-                artCtx.filter = 'grayscale(1) contrast(1.35) brightness(1.08)';
                 artCtx.drawImage(photo, b.x, b.y, b.w, b.h);
-                artCtx.restore();
             }
             return;
         }
 
         const b = sketchBox, W = b.w, H = b.h;
+        const sketchP = Math.min(1, progress / SKETCH_SPLIT);
+        const colorP = progress <= SKETCH_SPLIT ? 0 : Math.min(1, (progress - SKETCH_SPLIT) / (1 - SKETCH_SPLIT));
 
         // giấy vẽ trải kín màn hình
         artCtx.drawImage(sketchPaper, 0, 0, width, height);
 
-        // mặt nạ hiện dần theo từng nét chì
-        const mg = maskCv.getContext('2d');
-        mg.clearRect(0, 0, W, H);
-        mg.strokeStyle = '#000';
-        mg.lineCap = 'round';
-
-        const e = progress < 0.5 ? 2 * progress * progress : 1 - Math.pow(-2 * progress + 2, 2) / 2;
-        const upto = e * STROKE_COUNT;
-        for (let i = 0; i < Math.ceil(upto); i++) {
-            const s = strokeLine(i, W, H);
-            const frac = Math.min(1, upto - i);
-            mg.lineWidth = s.w;
-            mg.globalAlpha = 0.55 + 0.45 * frac;
-            mg.beginPath();
-            mg.moveTo(s.x1, s.y1);
-            mg.lineTo(s.x1 + (s.x2 - s.x1) * frac, s.y1 + (s.y2 - s.y1) * frac);
-            mg.stroke();
+        // --- LỚP MÀU: tô dần theo từng dải sáp, chồng kiểu multiply để giữ vân giấy ---
+        let colorTip = null;
+        if (colorP > 0) {
+            const mg = colorMaskCv.getContext('2d');
+            mg.clearRect(0, 0, W, H);
+            mg.strokeStyle = '#000';
+            mg.lineCap = 'round';
+            mg.lineJoin = 'round';
+            const upto = colorP * COLOR_BANDS;
+            const last = Math.ceil(upto) - 1;
+            for (let i = 0; i <= last; i++) {
+                const end = drawPartialPath(mg, colorBandPath(i, W, H), Math.min(1, upto - i));
+                if (i === last) colorTip = end;
+            }
+            artCtx.save();
+            artCtx.globalCompositeOperation = 'multiply';
+            artCtx.globalAlpha = 0.92;
+            artCtx.drawImage(colorP < 1 ? maskInto(colorTmpCv, colorCv, colorMaskCv) : colorCv, b.x, b.y);
+            artCtx.restore();
         }
-        mg.globalAlpha = 1;
 
-        if (progress >= 1) {
+        // --- LỚP CHÌ: hiện dần theo từng nét chéo, luôn nằm trên lớp màu ---
+        const e = sketchP < 0.5 ? 2 * sketchP * sketchP : 1 - Math.pow(-2 * sketchP + 2, 2) / 2;
+        const upto = e * STROKE_COUNT;
+        if (sketchP >= 1) {
             artCtx.drawImage(sketchInk, b.x, b.y);
         } else {
-            const tg = tmpCv.getContext('2d');
-            tg.globalCompositeOperation = 'source-over';
-            tg.clearRect(0, 0, W, H);
-            tg.drawImage(sketchInk, 0, 0);
-            tg.globalCompositeOperation = 'destination-in';
-            tg.drawImage(maskCv, 0, 0);
-            tg.globalCompositeOperation = 'source-over';
-            artCtx.drawImage(tmpCv, b.x, b.y);
+            const mg = maskCv.getContext('2d');
+            mg.clearRect(0, 0, W, H);
+            mg.strokeStyle = '#000';
+            mg.lineCap = 'round';
+            for (let i = 0; i < Math.ceil(upto); i++) {
+                const st = strokeLine(i, W, H);
+                const frac = Math.min(1, upto - i);
+                mg.lineWidth = st.w;
+                mg.globalAlpha = 0.55 + 0.45 * frac;
+                mg.beginPath();
+                mg.moveTo(st.x1, st.y1);
+                mg.lineTo(st.x1 + (st.x2 - st.x1) * frac, st.y1 + (st.y2 - st.y1) * frac);
+                mg.stroke();
+            }
+            mg.globalAlpha = 1;
+            artCtx.drawImage(maskInto(tmpCv, sketchInk, maskCv), b.x, b.y);
         }
 
-        // đầu bút chì bám theo nét đang vẽ
-        const cur = strokeLine(Math.min(STROKE_COUNT - 1, Math.floor(upto)), W, H);
-        const f = upto - Math.floor(upto);
-        const px = Math.max(b.x, Math.min(b.x + W, b.x + cur.x1 + (cur.x2 - cur.x1) * f));
-        const py = Math.max(b.y, Math.min(b.y + H, b.y + cur.y1 + (cur.y2 - cur.y1) * f));
+        // --- ĐẦU BÚT: bút chì khi phác, bút sáp khi tô màu ---
+        let tx, ty;
+        if (colorTip) {
+            tx = colorTip.x;
+            ty = colorTip.y;
+        } else {
+            const cur = strokeLine(Math.min(STROKE_COUNT - 1, Math.floor(upto)), W, H);
+            const f = upto - Math.floor(upto);
+            tx = cur.x1 + (cur.x2 - cur.x1) * f;
+            ty = cur.y1 + (cur.y2 - cur.y1) * f;
+        }
+        const px = b.x + Math.max(0, Math.min(W, tx));
+        const py = b.y + Math.max(0, Math.min(H, ty));
         pencilTool.style.transform = `translate(${px - 6}px, ${py - 42}px)`;
+
+        const tool = colorP > 0 ? 'crayon' : 'pencil';
+        if (tool !== currentTool) {
+            pencilIcon.textContent = tool === 'crayon' ? '\u{1F58D}\uFE0F' : '\u270F\uFE0F';
+            currentTool = tool;
+        }
     }
 
     // Nạp ảnh gốc, dựng sẵn các lớp để bấm "Đồng ý" là vẽ được ngay
@@ -532,13 +617,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Badge tiến trình phác chì trên cùng
     function updateDrawBadge(progress) {
+        if (progress < 1) {
+            const title = progress < SKETCH_SPLIT ? 'Đang phác chì bức tranh...' : 'Đang tô màu...';
+            if (statusTitle.textContent !== title) statusTitle.textContent = title;
+        }
         const pct = Math.round(progress * 100);
         statusPercent.textContent = pct + '%';
         progressFillMini.style.width = pct + '%';
     }
 
-    // Start 10s Animation Loop
-    function start10SecondPencilDrawing() {
+    // Vòng lặp vẽ: phác chì rồi tô màu
+    function startDrawing() {
         if (drawAnimFrame) cancelAnimationFrame(drawAnimFrame);
         if (!sketchReady) buildSketchLayers();   // phòng khi ảnh vừa nạp xong
 
@@ -561,17 +650,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (progress < 1.0) {
                 drawAnimFrame = requestAnimationFrame(animateStep);
             } else {
-                finishHandDrawnMinion();
+                finishDrawing();
             }
         }
 
         drawAnimFrame = requestAnimationFrame(animateStep);
     }
 
-    function finishHandDrawnMinion() {
+    function finishDrawing() {
         isDrawing = false;
         pencilTool.classList.add('hidden');
-        statusTitle.textContent = 'Tranh chì đã xong!';
+        statusTitle.textContent = 'Bức tranh đã tô màu xong!';
         updateDrawBadge(1);
         setTimeout(() => drawStatusBadge.classList.add('hidden'), 2200);
         playMinionSound();
@@ -582,38 +671,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // BUTTON EVENT LISTENERS
     // ==========================================
 
-    btnYes.addEventListener('click', (e) => {
+    btnStart.addEventListener('click', (e) => {
         if (e) e.stopPropagation();
         mainWrapper.classList.add('hidden');
         btnFloatingReset.classList.remove('hidden');
 
-        start10SecondPencilDrawing();
-    });
-
-    let noCount = 0;
-    const noTexts = ["Không nha 😜", "Chắc chưa? 🥺", "Suy nghĩ lại đi mà! 🍌", "Nút này hỏng rồi 💥", "Đồng ý đi năn nỉ đó ❤️"];
-
-    function moveNoBtn(e) {
-        if (e) e.stopPropagation();
-        noCount++;
-        const maxOffset = 130;
-        const rx = (Math.random() - 0.5) * maxOffset;
-        const ry = (Math.random() - 0.5) * maxOffset;
-        btnNo.style.transform = `translate(${rx}px, ${ry}px)`;
-        btnNo.textContent = noTexts[noCount % noTexts.length];
-    }
-
-    btnNo.addEventListener('mouseenter', moveNoBtn);
-    btnNo.addEventListener('click', (e) => {
-        if (e) e.stopPropagation();
-        if (noCount >= 4) {
-            btnNo.textContent = "Đồng ý luôn! 🥰";
-            btnNo.style.background = "#FFE838";
-            btnNo.style.color = "#164387";
-            btnNo.onclick = () => btnYes.click();
-        } else {
-            moveNoBtn(e);
-        }
+        startDrawing();
     });
 
     btnFloatingReset.addEventListener('click', (e) => {
@@ -624,13 +687,6 @@ document.addEventListener('DOMContentLoaded', () => {
         sketchShown = false;
         artCtx.clearRect(0, 0, width, height);
         drawStatusBadge.classList.add('hidden');
-
-        noCount = 0;
-        btnNo.style.transform = 'none';
-        btnNo.textContent = noTexts[0];
-        btnNo.onclick = null;
-        btnNo.style.background = 'rgba(255, 255, 255, 0.15)';
-        btnNo.style.color = '#f8fafc';
 
         mainWrapper.classList.remove('hidden');
         pencilTool.classList.add('hidden');
