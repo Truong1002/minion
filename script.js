@@ -211,7 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ==========================================
-    // ĐỘNG CƠ TRANH CHÌ - dựng bức chì trực tiếp từ ảnh gốc images.jpg
+    // ĐỘNG CƠ TRANH CHÌ - dựng bức chì trực tiếp từ ảnh gốc "images (1).jpg"
     // Khử màu -> đảo âm bản -> làm nhòe -> color-dodge -> viền Sobel
     // -> gạch chéo vùng tối -> vân giấy, rồi hiện dần theo từng nét bút chì.
     // ==========================================
@@ -283,12 +283,16 @@ document.addEventListener('DOMContentLoaded', () => {
         g.fillStyle = '#F4EEE1';
         g.fillRect(0, 0, w, h);
 
-        const n = g.createImageData(w, h), d = n.data;
+        // Hạt giấy: dựng trên canvas riêng rồi chồng lên bằng drawImage.
+        // putImageData ghi đè cả kênh alpha, đặt thẳng lên nền sẽ làm giấy trong suốt.
+        const grain = mkCanvas(w, h), gg = grain.getContext('2d');
+        const n = gg.createImageData(w, h), d = n.data;
         for (let i = 0; i < w * h; i++) {
             const v = 236 + (Math.random() * 36 - 18);
             d[i * 4] = v; d[i * 4 + 1] = v - 3; d[i * 4 + 2] = v - 12; d[i * 4 + 3] = 52;
         }
-        g.putImageData(n, 0, 0);
+        gg.putImageData(n, 0, 0);
+        g.drawImage(grain, 0, 0);
 
         g.globalAlpha = 0.05;
         g.strokeStyle = '#8C8677';
@@ -311,17 +315,26 @@ document.addEventListener('DOMContentLoaded', () => {
         return c;
     }
 
-    // Tính khung tờ giấy vừa với màn hình, giữ đúng tỉ lệ ảnh gốc
+    // Tranh phủ kín màn hình: giấy trải toàn bộ viewport, hình vẽ phóng hết cỡ
+    // (giữ đúng tỉ lệ ảnh) và chỉ chừa chỗ cho badge phía trên, nút "Thử lại"
     function computeSketchBox() {
         const ratio = (photo.naturalHeight || 1) / (photo.naturalWidth || 1);
         const narrow = width < 600;
-        // Dien thoai: le hep hon de tranh to hon, nhung chua cho badge tren + nut Thu Lai duoi
-        const maxW = Math.min(width - (narrow ? 32 : 56), 640);
-        const maxH = Math.min(height - (narrow ? 168 : 120), 640);
-        let w = Math.max(180, maxW);
+        const padX = narrow ? 8 : 24;
+        const padTop = narrow ? 64 : 76;       // nằm dưới badge tiến trình
+        const padBottom = narrow ? 72 : 24;    // mobile: nút "Thử lại" ở góc dưới
+        const availH = height - padTop - padBottom;
+        const maxW = Math.min(width - padX * 2, 1400);
+        const maxH = Math.min(availH, 1400);
+        let w = Math.max(160, maxW);
         let h = w * ratio;
-        if (h > maxH) { h = Math.max(180, maxH); w = h / ratio; }
-        return { x: Math.round((width - w) / 2), y: Math.round((height - h) / 2), w: Math.round(w), h: Math.round(h) };
+        if (h > maxH) { h = Math.max(160, maxH); w = h / ratio; }
+        return {
+            x: Math.round((width - w) / 2),
+            y: Math.round(padTop + (availH - h) / 2),
+            w: Math.round(w),
+            h: Math.round(h)
+        };
     }
 
     // Dựng lớp mực chì từ ảnh gốc
@@ -420,7 +433,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         sketchInk = ink;
-        sketchPaper = buildPaperLayer(W, H);
+        sketchPaper = buildPaperLayer(width, height);
         maskCv = mkCanvas(W, H);
         tmpCv = mkCanvas(W, H);
         sketchReady = true;
@@ -453,15 +466,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const b = sketchBox, W = b.w, H = b.h;
 
-        // tờ giấy + bóng đổ
-        artCtx.save();
-        artCtx.shadowColor = 'rgba(0,0,0,0.6)';
-        artCtx.shadowBlur = 46;
-        artCtx.shadowOffsetY = 20;
-        artCtx.fillStyle = '#F4EEE1';
-        artCtx.fillRect(b.x - 14, b.y - 14, W + 28, H + 28);
-        artCtx.restore();
-        artCtx.drawImage(sketchPaper, b.x, b.y);
+        // giấy vẽ trải kín màn hình
+        artCtx.drawImage(sketchPaper, 0, 0, width, height);
 
         // mặt nạ hiện dần theo từng nét chì
         const mg = maskCv.getContext('2d');
@@ -496,11 +502,6 @@ document.addEventListener('DOMContentLoaded', () => {
             artCtx.drawImage(tmpCv, b.x, b.y);
         }
 
-        // viền trong của tờ giấy
-        artCtx.strokeStyle = 'rgba(43,43,48,0.18)';
-        artCtx.lineWidth = 1;
-        artCtx.strokeRect(b.x + 8.5, b.y + 8.5, W - 17, H - 17);
-
         // đầu bút chì bám theo nét đang vẽ
         const cur = strokeLine(Math.min(STROKE_COUNT - 1, Math.floor(upto)), W, H);
         const f = upto - Math.floor(upto);
@@ -511,7 +512,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Nạp ảnh gốc, dựng sẵn các lớp để bấm "Đồng ý" là vẽ được ngay
     photo.onload = () => { buildSketchLayers(); };
-    photo.src = (typeof MINION_PHOTO !== 'undefined') ? MINION_PHOTO : 'images.jpg';
+    photo.src = (typeof SKETCH_PHOTO !== 'undefined') ? SKETCH_PHOTO : 'images%20(1).jpg';
 
     // Đổi kích thước màn hình thì dựng lại cho vừa khung
     function scheduleSketchRebuild() {
@@ -520,6 +521,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const box = computeSketchBox();
             if (sketchReady && sketchBox && box.w === sketchBox.w && box.h === sketchBox.h) {
                 sketchBox = box;            // chi doi vi tri, khoi dung lai lop muc
+                sketchPaper = buildPaperLayer(width, height);
             } else {
                 sketchReady = false;
                 buildSketchLayers();
