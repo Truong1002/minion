@@ -211,7 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ==========================================
-    // ĐỘNG CƠ TRANH CHÌ - dựng bức chì trực tiếp từ ảnh gốc "images (1).jpg"
+    // ĐỘNG CƠ TRANH CHÌ - dựng bức chì trực tiếp từ ảnh gốc "banhkemthotay-vn-21.webp"
     // Khử màu -> đảo âm bản -> làm nhòe -> color-dodge -> viền Sobel
     // -> gạch chéo vùng tối -> vân giấy, rồi hiện dần theo từng nét bút chì.
     // ==========================================
@@ -227,8 +227,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let sketchBox = null;     // vị trí tờ giấy trên màn hình {x, y, w, h}
     let maskCv = null, tmpCv = null;
     let colorCv = null, colorMaskCv = null, colorTmpCv = null;   // lớp màu + mặt nạ tô dần
-    let layerFar = null, layerNear = null;        // lớp trái tim và lớp nhân vật cho chế độ 3D
-    let silFar = null, silNear = null;            // bóng đổ của hai lớp
+    let popSlices = [];                           // các lát ảnh theo độ sâu cho chế độ 3D
+    let silNear = null;                           // bóng của chủ thể
     let popReady = false;
     let view3DFrame = null;                       // vòng lặp xoay tranh sau khi vẽ xong
     let sketchReady = false;
@@ -454,7 +454,7 @@ document.addEventListener('DOMContentLoaded', () => {
         colorTmpCv = mkCanvas(W, H);
 
         // 9. tách tranh thành các lớp rời để bật lên 3D
-        buildPopLayers(W, H);
+        buildPopLayers(W, H, gray);
 
         sketchReady = true;
         return true;
@@ -470,91 +470,96 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ==========================================
-    // LỚP 3D: tách bức tranh thành lớp nền (trái tim) và lớp nhân vật,
-    // rồi nhấc chúng khỏi mặt giấy như một tấm thiệp pop-up.
+    // LỚP 3D: dựng bản đồ độ sâu rồi cắt bức tranh thành nhiều lát,
+    // lát càng gần càng trôi nhanh khi đổi góc nhìn - ảnh phẳng thành có chiều sâu.
     // ==========================================
 
-    // Phân loại một điểm ảnh theo bảng màu thật của bức tranh:
-    // nền trắng (255,255,255) · hồng trái tim (250,123,166) · da (224,160,128)
-    // áo đỏ (249,56,77) · váy đỏ sẫm (198,0,53) · quần vàng (241,242,102) · nét đen
-    function classifyPixel(r, g, b) {
-        if (r > 235 && g > 235 && b > 235) return 0;                  // nền giấy
-        if (r < 100 && g < 100 && b < 100) return 3;                  // nét đen: xét sau
-        if (r > 205 && g > 100 && g < 215 && b >= g - 5) return 1;    // hồng (da có b < g nên không lọt)
-        return 2;                                                     // nhân vật
-    }
+    const DEPTH_SLICES = 7;
+    const SLICE_MAX = 820;        // giới hạn độ phân giải mỗi lát cho nhẹ máy
 
-    function buildPopLayers(W, H) {
-        const d = colorCv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
+    // Độ sâu đoán từ hai dấu hiệu có sẵn trong mọi tấm ảnh:
+    //   - độ nét cục bộ: ảnh xoá phông thì chủ thể nét, hậu cảnh nhoè
+    //   - vị trí: thứ nằm giữa khung hình thường là chủ thể
+    function buildDepthMap(gray, W, H) {
         const n = W * H;
-        const label = new Uint8Array(n);
-        for (let i = 0; i < n; i++) label[i] = classifyPixel(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]);
 
-        // Nét đen đi theo lớp của vùng màu quanh nó; chạm vào nhân vật thì thuộc nhân vật,
-        // nhờ vậy viền của trái tim ở lại lớp sau còn viền nhân vật bật lên lớp trước.
-        const base = label.slice();
-        const R = Math.max(3, Math.round(W / 90));
+        const soft = blurArr(Float32Array.from(gray), W, H, Math.max(2, Math.round(W / 120)));
+        const sharp = new Float32Array(n);
+        for (let i = 0; i < n; i++) sharp[i] = Math.abs(gray[i] - soft[i]);
+        const sharpSm = blurArr(sharp, W, H, Math.max(3, Math.round(W / 40)));
+
+        let hi = 0;
+        for (let i = 0; i < n; i++) if (sharpSm[i] > hi) hi = sharpSm[i];
+        if (hi < 1) hi = 1;
+
+        const depth = new Float32Array(n);
+        const cx = W / 2, cy = H * 0.54, rx = W * 0.62, ry = H * 0.72;
         for (let y = 0; y < H; y++) {
             for (let x = 0; x < W; x++) {
                 const i = y * W + x;
-                if (base[i] !== 3) continue;
-                let near = 0, pink = 0;
-                for (let dy = -R; dy <= R; dy += R) {
-                    const yy = y + dy;
-                    if (yy < 0 || yy >= H) continue;
-                    for (let dx = -R; dx <= R; dx += R) {
-                        const xx = x + dx;
-                        if (xx < 0 || xx >= W) continue;
-                        const l = base[yy * W + xx];
-                        if (l === 2) near++; else if (l === 1) pink++;
-                    }
-                }
-                label[i] = near > 0 ? 2 : (pink > 0 ? 1 : 2);
+                const dx = (x - cx) / rx, dy = (y - cy) / ry;
+                const center = Math.max(0, 1 - (dx * dx + dy * dy));
+                depth[i] = 0.58 * Math.min(1, sharpSm[i] / hi * 1.6) + 0.42 * center;
             }
         }
 
-        layerFar = mkCanvas(W, H);
-        layerNear = mkCanvas(W, H);
-        const fg = layerFar.getContext('2d'), ng = layerNear.getContext('2d');
-        const fi = fg.createImageData(W, H), ni = ng.createImageData(W, H);
-        for (let i = 0; i < n; i++) {
-            const t = label[i] === 1 ? fi.data : (label[i] === 2 ? ni.data : null);
-            if (!t) continue;
-            t[i * 4] = d[i * 4]; t[i * 4 + 1] = d[i * 4 + 1]; t[i * 4 + 2] = d[i * 4 + 2]; t[i * 4 + 3] = 255;
-        }
-        featherEdges(fi, W, H);
-        featherEdges(ni, W, H);
-        fg.putImageData(fi, 0, 0);
-        ng.putImageData(ni, 0, 0);
-
-        silFar = buildSilhouette(layerFar);
-        silNear = buildSilhouette(layerNear);
-        popReady = true;
+        // làm mượt để các lát không bị vỡ vụn
+        const sm = blurArr(depth, W, H, Math.max(4, Math.round(W / 26)));
+        let lo = Infinity, mx = -Infinity;
+        for (let i = 0; i < n; i++) { if (sm[i] < lo) lo = sm[i]; if (sm[i] > mx) mx = sm[i]; }
+        const span = (mx - lo) || 1;
+        for (let i = 0; i < n; i++) sm[i] = (sm[i] - lo) / span;
+        return sm;
     }
 
-    // Cắt theo điểm ảnh cho biên răng cưa, nên làm mềm: độ mờ của mỗi điểm
-    // bằng tỉ lệ hàng xóm 3x3 cũng thuộc lớp đó
-    function featherEdges(img, W, H) {
-        const a = img.data;
-        const mask = new Uint8Array(W * H);
-        for (let i = 0; i < W * H; i++) mask[i] = a[i * 4 + 3] ? 1 : 0;
-        for (let y = 0; y < H; y++) {
-            for (let x = 0; x < W; x++) {
-                const i = y * W + x;
-                if (!mask[i]) continue;
-                let sum = 0, cnt = 0;
-                for (let dy = -1; dy <= 1; dy++) {
-                    const yy = y + dy;
-                    if (yy < 0 || yy >= H) continue;
-                    for (let dx = -1; dx <= 1; dx++) {
-                        const xx = x + dx;
-                        if (xx < 0 || xx >= W) continue;
-                        sum += mask[yy * W + xx]; cnt++;
-                    }
+    // Cắt ảnh màu thành các lát theo độ sâu. Mỗi điểm ảnh được chia cho hai lát
+    // gần nó nhất theo trọng số, nên chuyển lát không để lại đường nối.
+    function buildPopLayers(W, H, gray) {
+        const scale = Math.min(1, SLICE_MAX / Math.max(W, H));
+        const SW = Math.max(1, Math.round(W * scale)), SH = Math.max(1, Math.round(H * scale));
+
+        const small = mkCanvas(SW, SH), sg = small.getContext('2d', { willReadFrequently: true });
+        sg.imageSmoothingQuality = 'high';
+        sg.drawImage(colorCv, 0, 0, SW, SH);
+        const col = sg.getImageData(0, 0, SW, SH).data;
+
+        let g2 = gray;
+        if (scale < 1) {
+            // thu nhỏ ảnh xám bằng cách lấy mẫu, đủ dùng cho bản đồ độ sâu
+            g2 = new Float32Array(SW * SH);
+            for (let y = 0; y < SH; y++) {
+                const sy = Math.min(H - 1, Math.round(y / scale));
+                for (let x = 0; x < SW; x++) {
+                    g2[y * SW + x] = gray[sy * W + Math.min(W - 1, Math.round(x / scale))];
                 }
-                a[i * 4 + 3] = Math.round(255 * (0.45 + 0.55 * sum / cnt));
             }
         }
+        const depth = buildDepthMap(g2, SW, SH);
+
+        popSlices = [];
+        const n = SW * SH;
+        for (let k = 0; k < DEPTH_SLICES; k++) {
+            const center = (k + 0.5) / DEPTH_SLICES;
+            const cv = mkCanvas(SW, SH), cg = cv.getContext('2d');
+            const im = cg.createImageData(SW, SH), a = im.data;
+            let used = 0;
+            for (let i = 0; i < n; i++) {
+                const w = 1 - Math.abs(depth[i] - center) * DEPTH_SLICES;
+                if (w <= 0) continue;
+                a[i * 4] = col[i * 4]; a[i * 4 + 1] = col[i * 4 + 1]; a[i * 4 + 2] = col[i * 4 + 2];
+                a[i * 4 + 3] = Math.round(255 * Math.min(1, w));
+                used++;
+            }
+            if (!used) continue;
+            cg.putImageData(im, 0, 0);
+            popSlices.push({ cv: cv, depth: center });
+        }
+
+        // bóng đổ lấy theo hình của hai lát gần nhất, để bức tranh có điểm tựa trên giấy
+        const near = mkCanvas(SW, SH), ng = near.getContext('2d');
+        popSlices.slice(-2).forEach((s) => ng.drawImage(s.cv, 0, 0));
+        silNear = buildSilhouette(near);
+        popReady = popSlices.length > 1;
     }
 
     // Bóng của một lớp: đúng hình dáng lớp đó nhưng tô đen
@@ -588,48 +593,51 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // Vẽ một lớp đã nhấc lên: bóng đổ trước, rồi chính lớp đó dịch theo góc nhìn
-    function drawPopLayer(img, sil, depth, lift, ax, ay) {
-        const b = sketchBox;
-        const shift = depth * 13 * lift;
-        const rise = depth * 9 * lift;
-        const sc = 1 + depth * 0.02 * lift;
-        const w = b.w * sc, h = b.h * sc;
-        const x = b.x + (b.w - w) / 2 + ax * shift;
-        const y = b.y + (b.h - h) / 2 + ay * shift - rise;
-
-        if (lift > 0.02) {
-            // Vẽ bóng bằng cách đặt hình ra ngoài khung và kéo bóng ngược vào trong
-            artCtx.save();
-            artCtx.shadowColor = 'rgba(58, 44, 28, ' + (0.34 * lift).toFixed(3) + ')';
-            artCtx.shadowBlur = 10 + 26 * depth * lift;
-            artCtx.shadowOffsetX = 100000 - ax * depth * 10 * lift;
-            artCtx.shadowOffsetY = depth * 16 * lift + 6;
-            artCtx.drawImage(sil, x - 100000, y, w, h);
-            artCtx.restore();
-        }
-
-        artCtx.save();
-        artCtx.globalCompositeOperation = 'multiply';
-        artCtx.globalAlpha = 0.92;
-        artCtx.drawImage(img, x, y, w, h);
-        artCtx.restore();
-    }
-
     function renderPopUp(lift, t) {
         const b = sketchBox;
         artCtx.clearRect(0, 0, width, height);
         artCtx.drawImage(sketchPaper, 0, 0, width, height);
 
-        // nét chì vẫn in lại trên giấy, mờ dần khi các lớp màu nhấc lên
+        // nét chì vẫn in lại trên giấy, mờ dần khi các lát màu nhấc lên
         artCtx.save();
         artCtx.globalAlpha = 1 - 0.82 * lift;
         artCtx.drawImage(sketchInk, b.x, b.y);
         artCtx.restore();
 
         const a = viewAngle(t);
-        drawPopLayer(layerFar, silFar, 1, lift, a.ax, a.ay);
-        drawPopLayer(layerNear, silNear, 2.4, lift, a.ax, a.ay);
+        const AMP = Math.max(16, b.w * 0.055);
+
+        // bóng của chủ thể đặt trên mặt giấy
+        if (lift > 0.02 && silNear) {
+            artCtx.save();
+            artCtx.shadowColor = 'rgba(58, 44, 28, ' + (0.32 * lift).toFixed(3) + ')';
+            artCtx.shadowBlur = 12 + 30 * lift;
+            artCtx.shadowOffsetX = 100000 - a.ax * 12 * lift;
+            artCtx.shadowOffsetY = 18 * lift + 6;
+            artCtx.drawImage(silNear, b.x - 100000, b.y, b.w, b.h);
+            artCtx.restore();
+        }
+
+        artCtx.save();
+        // kẹp vào đúng khung tranh, nếu không các lát trượt lệch sẽ làm mép ảnh gợn sóng
+        artCtx.beginPath();
+        artCtx.rect(b.x, b.y, b.w, b.h);
+        artCtx.clip();
+        artCtx.globalCompositeOperation = 'multiply';
+        artCtx.globalAlpha = 0.92;
+        for (let i = 0; i < popSlices.length; i++) {
+            const sl = popSlices[i];
+            const rel = sl.depth - 0.45;            // âm: nằm sau, dương: nổi lên trước
+            const shift = rel * AMP * lift;
+            // phóng dư một chút để lát trượt tới đâu cũng không hở mép
+            const sc = 1 + (0.06 + rel * 0.05) * lift;
+            const w = b.w * sc, h = b.h * sc;
+            artCtx.drawImage(sl.cv,
+                b.x + (b.w - w) / 2 + a.ax * shift,
+                b.y + (b.h - h) / 2 + a.ay * shift - rel * 10 * lift,
+                w, h);
+        }
+        artCtx.restore();
     }
 
     // Dải sáp màu thứ i: đường zíc-zắc ngang, chiều đi đổi luân phiên như tay người tô
@@ -777,7 +785,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Nạp ảnh gốc, dựng sẵn các lớp để bấm "Đồng ý" là vẽ được ngay
     photo.onload = () => { buildSketchLayers(); };
-    photo.src = (typeof SKETCH_PHOTO !== 'undefined') ? SKETCH_PHOTO : 'images%20(1).jpg';
+    photo.src = (typeof SKETCH_PHOTO !== 'undefined') ? SKETCH_PHOTO : 'banhkemthotay-vn-21.webp';
 
     // Đổi kích thước màn hình thì dựng lại cho vừa khung
     function scheduleSketchRebuild() {
