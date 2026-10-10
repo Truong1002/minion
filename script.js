@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let isDrawing = false;
     let drawAnimFrame = null;
-    const DRAW_DURATION = 13000; // phác chì ~7,5 giây rồi tô màu ~5,5 giây
+    const DRAW_DURATION = 15000; // phác chì ~6,3s -> tô màu ~5,4s -> dựng 3D ~3,3s
 
     // Resize Handler
     window.addEventListener('resize', () => {
@@ -218,7 +218,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const SKETCH = { blur: 8, dark: 0.63, edge: 0.54, hatch: 0.40 };
     const STROKE_COUNT = 74;
-    const SKETCH_SPLIT = 0.58;   // phần đầu của tiến trình dành cho phác chì, phần sau để tô màu
+    const SKETCH_SPLIT = 0.42;   // 0 -> 42%: phác chì
+    const COLOR_SPLIT = 0.78;    // 42% -> 78%: tô màu, phần còn lại: bật lên 3D
     const COLOR_BANDS = 22;      // số dải sáp màu tô từ trên xuống
 
     let sketchInk = null;     // lớp "mực chì" (canvas)
@@ -226,6 +227,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let sketchBox = null;     // vị trí tờ giấy trên màn hình {x, y, w, h}
     let maskCv = null, tmpCv = null;
     let colorCv = null, colorMaskCv = null, colorTmpCv = null;   // lớp màu + mặt nạ tô dần
+    let layerFar = null, layerNear = null;        // lớp trái tim và lớp nhân vật cho chế độ 3D
+    let silFar = null, silNear = null;            // bóng đổ của hai lớp
+    let popReady = false;
+    let view3DFrame = null;                       // vòng lặp xoay tranh sau khi vẽ xong
     let sketchReady = false;
     let sketchShown = false;   // tranh đã được vẽ ra màn hình hay chưa
     let sketchTainted = false;
@@ -448,6 +453,9 @@ document.addEventListener('DOMContentLoaded', () => {
         colorMaskCv = mkCanvas(W, H);
         colorTmpCv = mkCanvas(W, H);
 
+        // 9. tách tranh thành các lớp rời để bật lên 3D
+        buildPopLayers(W, H);
+
         sketchReady = true;
         return true;
     }
@@ -459,6 +467,169 @@ document.addEventListener('DOMContentLoaded', () => {
         const span = (end - start) / STROKE_COUNT;
         const p = start + i * span;
         return { x1: p, y1: -20, x2: p + slant, y2: H + 20, w: span * 1.7 };
+    }
+
+    // ==========================================
+    // LỚP 3D: tách bức tranh thành lớp nền (trái tim) và lớp nhân vật,
+    // rồi nhấc chúng khỏi mặt giấy như một tấm thiệp pop-up.
+    // ==========================================
+
+    // Phân loại một điểm ảnh theo bảng màu thật của bức tranh:
+    // nền trắng (255,255,255) · hồng trái tim (250,123,166) · da (224,160,128)
+    // áo đỏ (249,56,77) · váy đỏ sẫm (198,0,53) · quần vàng (241,242,102) · nét đen
+    function classifyPixel(r, g, b) {
+        if (r > 235 && g > 235 && b > 235) return 0;                  // nền giấy
+        if (r < 100 && g < 100 && b < 100) return 3;                  // nét đen: xét sau
+        if (r > 205 && g > 100 && g < 215 && b >= g - 5) return 1;    // hồng (da có b < g nên không lọt)
+        return 2;                                                     // nhân vật
+    }
+
+    function buildPopLayers(W, H) {
+        const d = colorCv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data;
+        const n = W * H;
+        const label = new Uint8Array(n);
+        for (let i = 0; i < n; i++) label[i] = classifyPixel(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]);
+
+        // Nét đen đi theo lớp của vùng màu quanh nó; chạm vào nhân vật thì thuộc nhân vật,
+        // nhờ vậy viền của trái tim ở lại lớp sau còn viền nhân vật bật lên lớp trước.
+        const base = label.slice();
+        const R = Math.max(3, Math.round(W / 90));
+        for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+                const i = y * W + x;
+                if (base[i] !== 3) continue;
+                let near = 0, pink = 0;
+                for (let dy = -R; dy <= R; dy += R) {
+                    const yy = y + dy;
+                    if (yy < 0 || yy >= H) continue;
+                    for (let dx = -R; dx <= R; dx += R) {
+                        const xx = x + dx;
+                        if (xx < 0 || xx >= W) continue;
+                        const l = base[yy * W + xx];
+                        if (l === 2) near++; else if (l === 1) pink++;
+                    }
+                }
+                label[i] = near > 0 ? 2 : (pink > 0 ? 1 : 2);
+            }
+        }
+
+        layerFar = mkCanvas(W, H);
+        layerNear = mkCanvas(W, H);
+        const fg = layerFar.getContext('2d'), ng = layerNear.getContext('2d');
+        const fi = fg.createImageData(W, H), ni = ng.createImageData(W, H);
+        for (let i = 0; i < n; i++) {
+            const t = label[i] === 1 ? fi.data : (label[i] === 2 ? ni.data : null);
+            if (!t) continue;
+            t[i * 4] = d[i * 4]; t[i * 4 + 1] = d[i * 4 + 1]; t[i * 4 + 2] = d[i * 4 + 2]; t[i * 4 + 3] = 255;
+        }
+        featherEdges(fi, W, H);
+        featherEdges(ni, W, H);
+        fg.putImageData(fi, 0, 0);
+        ng.putImageData(ni, 0, 0);
+
+        silFar = buildSilhouette(layerFar);
+        silNear = buildSilhouette(layerNear);
+        popReady = true;
+    }
+
+    // Cắt theo điểm ảnh cho biên răng cưa, nên làm mềm: độ mờ của mỗi điểm
+    // bằng tỉ lệ hàng xóm 3x3 cũng thuộc lớp đó
+    function featherEdges(img, W, H) {
+        const a = img.data;
+        const mask = new Uint8Array(W * H);
+        for (let i = 0; i < W * H; i++) mask[i] = a[i * 4 + 3] ? 1 : 0;
+        for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+                const i = y * W + x;
+                if (!mask[i]) continue;
+                let sum = 0, cnt = 0;
+                for (let dy = -1; dy <= 1; dy++) {
+                    const yy = y + dy;
+                    if (yy < 0 || yy >= H) continue;
+                    for (let dx = -1; dx <= 1; dx++) {
+                        const xx = x + dx;
+                        if (xx < 0 || xx >= W) continue;
+                        sum += mask[yy * W + xx]; cnt++;
+                    }
+                }
+                a[i * 4 + 3] = Math.round(255 * (0.45 + 0.55 * sum / cnt));
+            }
+        }
+    }
+
+    // Bóng của một lớp: đúng hình dáng lớp đó nhưng tô đen
+    function buildSilhouette(src) {
+        const c = mkCanvas(src.width, src.height), g = c.getContext('2d');
+        g.drawImage(src, 0, 0);
+        g.globalCompositeOperation = 'source-in';
+        g.fillStyle = '#000';
+        g.fillRect(0, 0, c.width, c.height);
+        return c;
+    }
+
+    // Góc nhìn: theo con trỏ trên máy tính, theo độ nghiêng máy trên điện thoại,
+    // và luôn đung đưa nhẹ để thấy chiều sâu ngay cả khi không ai chạm vào
+    const tilt = { x: 0, y: 0, has: false };
+    window.addEventListener('deviceorientation', (ev) => {
+        if (ev.gamma === null || ev.gamma === undefined) return;
+        tilt.has = true;
+        tilt.x = Math.max(-1, Math.min(1, ev.gamma / 32));
+        tilt.y = Math.max(-1, Math.min(1, ((ev.beta || 45) - 45) / 32));
+    });
+
+    function viewAngle(t) {
+        const sway = Math.sin(t / 1600) * 0.32;
+        const bob = Math.cos(t / 2100) * 0.22;
+        if (tilt.has) return { ax: tilt.x + sway * 0.4, ay: tilt.y + bob * 0.4 };
+        if (mouse.x < 0) return { ax: sway, ay: bob };
+        return {
+            ax: (mouse.x / width - 0.5) * 2 + sway * 0.3,
+            ay: (mouse.y / height - 0.5) * 2 + bob * 0.3
+        };
+    }
+
+    // Vẽ một lớp đã nhấc lên: bóng đổ trước, rồi chính lớp đó dịch theo góc nhìn
+    function drawPopLayer(img, sil, depth, lift, ax, ay) {
+        const b = sketchBox;
+        const shift = depth * 13 * lift;
+        const rise = depth * 9 * lift;
+        const sc = 1 + depth * 0.02 * lift;
+        const w = b.w * sc, h = b.h * sc;
+        const x = b.x + (b.w - w) / 2 + ax * shift;
+        const y = b.y + (b.h - h) / 2 + ay * shift - rise;
+
+        if (lift > 0.02) {
+            // Vẽ bóng bằng cách đặt hình ra ngoài khung và kéo bóng ngược vào trong
+            artCtx.save();
+            artCtx.shadowColor = 'rgba(58, 44, 28, ' + (0.34 * lift).toFixed(3) + ')';
+            artCtx.shadowBlur = 10 + 26 * depth * lift;
+            artCtx.shadowOffsetX = 100000 - ax * depth * 10 * lift;
+            artCtx.shadowOffsetY = depth * 16 * lift + 6;
+            artCtx.drawImage(sil, x - 100000, y, w, h);
+            artCtx.restore();
+        }
+
+        artCtx.save();
+        artCtx.globalCompositeOperation = 'multiply';
+        artCtx.globalAlpha = 0.92;
+        artCtx.drawImage(img, x, y, w, h);
+        artCtx.restore();
+    }
+
+    function renderPopUp(lift, t) {
+        const b = sketchBox;
+        artCtx.clearRect(0, 0, width, height);
+        artCtx.drawImage(sketchPaper, 0, 0, width, height);
+
+        // nét chì vẫn in lại trên giấy, mờ dần khi các lớp màu nhấc lên
+        artCtx.save();
+        artCtx.globalAlpha = 1 - 0.82 * lift;
+        artCtx.drawImage(sketchInk, b.x, b.y);
+        artCtx.restore();
+
+        const a = viewAngle(t);
+        drawPopLayer(layerFar, silFar, 1, lift, a.ax, a.ay);
+        drawPopLayer(layerNear, silNear, 2.4, lift, a.ax, a.ay);
     }
 
     // Dải sáp màu thứ i: đường zíc-zắc ngang, chiều đi đổi luân phiên như tay người tô
@@ -523,7 +694,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const b = sketchBox, W = b.w, H = b.h;
         const sketchP = Math.min(1, progress / SKETCH_SPLIT);
-        const colorP = progress <= SKETCH_SPLIT ? 0 : Math.min(1, (progress - SKETCH_SPLIT) / (1 - SKETCH_SPLIT));
+        const colorP = progress <= SKETCH_SPLIT ? 0 : Math.min(1, (progress - SKETCH_SPLIT) / (COLOR_SPLIT - SKETCH_SPLIT));
+
+        // Tô xong thì chuyển sang pop-up 3D
+        if (progress > COLOR_SPLIT && popReady) {
+            const lift = Math.min(1, (progress - COLOR_SPLIT) / (1 - COLOR_SPLIT));
+            const ease = 1 - Math.pow(1 - lift, 3);
+            renderPopUp(ease, performance.now());
+            pencilTool.classList.add('hidden');
+            return;
+        }
 
         // giấy vẽ trải kín màn hình
         artCtx.drawImage(sketchPaper, 0, 0, width, height);
@@ -609,6 +789,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 sketchPaper = buildPaperLayer(width, height);
             } else {
                 sketchReady = false;
+                popReady = false;
                 buildSketchLayers();
             }
             if (!isDrawing && sketchShown) renderPencilSketch(1);
@@ -618,7 +799,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Badge tiến trình phác chì trên cùng
     function updateDrawBadge(progress) {
         if (progress < 1) {
-            const title = progress < SKETCH_SPLIT ? 'Đang phác chì bức tranh...' : 'Đang tô màu...';
+            const title = progress < SKETCH_SPLIT ? 'Đang phác chì bức tranh...'
+                : (progress < COLOR_SPLIT ? 'Đang tô màu...' : 'Đang dựng hình 3D...');
             if (statusTitle.textContent !== title) statusTitle.textContent = title;
         }
         const pct = Math.round(progress * 100);
@@ -657,14 +839,26 @@ document.addEventListener('DOMContentLoaded', () => {
         drawAnimFrame = requestAnimationFrame(animateStep);
     }
 
+    // Sau khi vẽ xong, tranh vẫn xoay theo con trỏ / độ nghiêng máy
+    function start3DView() {
+        if (view3DFrame) cancelAnimationFrame(view3DFrame);
+        const spin = () => {
+            if (!sketchShown || isDrawing) { view3DFrame = null; return; }
+            if (popReady) renderPopUp(1, performance.now());
+            view3DFrame = requestAnimationFrame(spin);
+        };
+        view3DFrame = requestAnimationFrame(spin);
+    }
+
     function finishDrawing() {
         isDrawing = false;
         pencilTool.classList.add('hidden');
-        statusTitle.textContent = 'Bức tranh đã tô màu xong!';
+        statusTitle.textContent = tilt.has ? 'Xong! Nghiêng máy để xoay tranh' : 'Xong! Di chuột để xoay tranh';
         updateDrawBadge(1);
         setTimeout(() => drawStatusBadge.classList.add('hidden'), 2200);
         playMinionSound();
         startConfetti();
+        start3DView();
     }
 
     // ==========================================
@@ -673,6 +867,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnStart.addEventListener('click', (e) => {
         if (e) e.stopPropagation();
+
+        // iOS chỉ cho đọc cảm biến nghiêng khi người dùng vừa chạm vào gì đó
+        const DOE = window.DeviceOrientationEvent;
+        if (DOE && typeof DOE.requestPermission === 'function') {
+            DOE.requestPermission().catch(() => {});
+        }
+
         mainWrapper.classList.add('hidden');
         btnFloatingReset.classList.remove('hidden');
 
@@ -685,6 +886,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         isDrawing = false;
         sketchShown = false;
+        if (view3DFrame) { cancelAnimationFrame(view3DFrame); view3DFrame = null; }
         artCtx.clearRect(0, 0, width, height);
         drawStatusBadge.classList.add('hidden');
 

@@ -26,8 +26,10 @@ Bức tranh trong app **không phải hình vẽ vector** mà được dựng th
 4. Chỉnh điểm trắng + gamma cho giấy trắng bong, nét đậm
 5. Dò biên **Sobel** để ăn thêm đường viền chì
 6. Phủ nét gạch chéo ở vùng tối, rồi trải vân giấy tự sinh
-7. Hiện dần trong ~7,5 giây theo từng nét chì chéo, có đầu bút chì chạy theo
-8. Tô màu trong ~5,5 giây: ảnh gốc được tô dần lên giấy theo từng dải sáp zíc-zắc (chồng kiểu multiply để giữ vân giấy), nét chì vẫn nằm trên cùng
+7. Hiện dần theo từng nét chì chéo, có đầu bút chì chạy theo
+8. Tô màu: ảnh gốc được tô dần lên giấy theo từng dải sáp zíc-zắc (chồng kiểu multiply để giữ vân giấy), nét chì vẫn nằm trên cùng
+9. Dựng 3D: tranh được tách thành lớp trái tim và lớp nhân vật theo bảng màu, nét đen đi theo lớp của vùng màu quanh nó
+10. Hai lớp nhấc khỏi mặt giấy như thiệp pop-up, có bóng đổ riêng, và xoay theo con trỏ chuột hoặc độ nghiêng điện thoại
 
 | File | Vai trò |
 | --- | --- |
